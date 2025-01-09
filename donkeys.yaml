@@ -1,0 +1,156 @@
+
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  mappingDbHost:
+    Type: String
+    Default: DuClassUsers
+  apiRelease:
+    Type: String
+  deploybucket:
+    Type: String
+
+Resources: 
+  # Create a role
+  DonkeyLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Description: "Role for performing functions"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AWSLambda_FullAccess"
+        - "arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"
+      RoleName: "DUClassLambdaRole"  
+
+  # Create API gateway
+  DonkeyApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: DonkeyApiGateway
+      Parameters:
+        endpointConfigurationTypes: EDGE
+
+  # Create API Gateway Resource
+  DuResource:  
+    Type: 'AWS::ApiGateway::Resource'
+    DependsOn: DonkeyApiGateway
+    Properties:
+      RestApiId: !Ref "DonkeyApiGateway"
+      ParentId: !GetAtt
+        - DonkeyApiGateway
+        - RootResourceId
+      PathPart: donkeys
+
+  # Create API Gateway Methods
+  donkeyGetMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: "NONE"
+      HttpMethod: "GET"
+      OperationName: "GetDonkeys"
+      Integration:
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt "DonkeyGetLambda.Arn"
+      RestApiId: !Ref DonkeyApiGateway
+      ResourceId: !Ref DonkeyResource
+
+  # Create API Gateway Method Options
+  StudentResourceOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref "DonkeyApiGateway"
+      ResourceId: !Ref "DonkeyResource"
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            application/json: 'Empty'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+
+  # Create API Deployment
+  DonkeyApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - "donkeyGetMethod"
+    Properties:
+      RestApiId: !Ref DonkeyApiGateway
+
+  # Create API Stage
+  DonkeyNonProd:
+    Type: AWS::ApiGateway::Stage
+    DependsOn: DonkeyApiGateway
+    Properties:
+      StageName: "NonProd"
+      Description: "Non Prod stage for Donkey Api Gateway"
+      RestApiId: !Ref DonkeyApiGateway
+      DeploymentId: !Ref DonkeyApiDeployment
+
+
+  # Create Database table
+  DonkeyTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: "DonkeyId"
+          AttributeType: "N"
+      KeySchema:
+        - AttributeName: "DonkeyId"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 10
+        WriteCapacityUnits: 10
+      TableName: DonkeyUsers
+
+# Create lambda 
+  DonkeyGetLambda:
+    Type: AWS::Lambda::Function 
+    Properties:
+      FunctionName: DonkeyGetLambda
+      Role: !GetAtt DonkeyLambdaRole.Arn
+      Handler: index.lambdaHandler
+      Runtime: nodejs20.x
+      Code:
+        S3Bucket: !Ref deploybucket
+        S3Key: !Sub "${apiRelease}/lambda-src/DonkeyGetLambda.zip"
+      Environment:
+        Variables:
+          DB_HOST: !Ref "mappingDbHost"
+      Timeout: 60
+
+
+# Lambda Permission For API GateWay
+  lambdaApiGatewayInvokeGetDonkeys:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !Ref "DonkeyGetLambda"
+      Principal: "apigateway.amazonaws.com"
